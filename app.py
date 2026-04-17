@@ -155,7 +155,7 @@ async def cmd_start(message: types.Message):
 @dp.message(lambda msg: msg.text == "🔐 Зашифровать")
 async def encrypt_start(message: types.Message, state: FSMContext):
     await message.answer(
-        "📝 Введите текст для шифрования (только русские буквы в нижнем регистре):",
+        "📝 Введите текст для шифрования (только русские буквы):",
         reply_markup=types.ReplyKeyboardRemove()
     )
     await state.set_state(CryptStates.waiting_for_encrypt)
