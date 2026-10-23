@@ -17,7 +17,6 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
-# Загружаем токен из .env или bot.env
 load_dotenv()
 load_dotenv("bot.env")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -148,9 +147,9 @@ def de_RSA(st, d_val, n):
     return res
 
 def de_shifr(s_sa):
-    s_s = s_sa[0]
-    d_val = s_sa[1]
-    n = s_sa[2]
+    s_s = str(s_sa[0])
+    d_val = int(s_sa[1])
+    n = int(s_sa[2])
     num_s = de_RSA(s_s, d_val, n)
     ch = []
     pp = '[0-9]{2}'
@@ -214,16 +213,11 @@ def decrypt_packet(packet, char_info=None):
         return decrypted_lower
 
 
-# ==================== ШИФРОВАНИЕ "ИЗОБРАЖЕНИЕ В ИЗОБРАЖЕНИЕ" ====================
+# ==================== ШИФРОВАНИЕ И ДЕШИФРОВАНИЕ КАРТИНОК ====================
 
 MAGIC_HEADER = b'GIRF'
 
 def encrypt_image_to_cipher_image(raw_bytes: bytes) -> bytes:
-    """
-    Шифрует байты фото (Цезарь + RSA-гаммирование)
-    и формирует зашифрованное PNG-изображение (визуальный шум).
-    Качество сохраняется на 100% без потерь.
-    """
     shift = 7
     p_val = mx_pr(random.randint(10**2, 10**3))
     q_val = mx_pr(random.randint(10**2, 10**3))
@@ -235,21 +229,17 @@ def encrypt_image_to_cipher_image(raw_bytes: bytes) -> bytes:
     eil = e(fi)
     d_val = d(fi)
 
-    # Генератор псевдослучайного потока на базе параметров RSA
     rng = random.Random(d_val ^ n_val ^ shift)
 
-    # Шифрование байтов: сдвиг Цезаря + гамма
     encrypted_data = bytearray()
     for b in raw_bytes:
         gamma = rng.randint(0, 255)
         enc_b = (b + shift + gamma) % 256
         encrypted_data.append(enc_b)
 
-    # Заголовок: MAGIC(4) + shift(4) + len(4) + d_val(8) + n_val(8) = 28 байт
     header = struct.pack('>4sIIQQ', MAGIC_HEADER, shift, len(raw_bytes), d_val, n_val)
     full_payload = header + bytes(encrypted_data)
 
-    # Упаковываем байты в RGB пиксели (3 байта на пиксель)
     pad = (3 - len(full_payload) % 3) % 3
     full_payload += b'\x00' * pad
     total_pixels = len(full_payload) // 3
@@ -268,22 +258,17 @@ def encrypt_image_to_cipher_image(raw_bytes: bytes) -> bytes:
 
 
 def decrypt_cipher_image_to_original(cipher_img_bytes: bytes) -> bytes:
-    """
-    Считывает зашифрованное изображение, извлекает параметры шифра
-    и восстанавливает оригинальный файл байт-в-байт.
-    """
     img = Image.open(io.BytesIO(cipher_img_bytes))
     if img.mode != 'RGB':
         img = img.convert('RGB')
     raw_payload = img.tobytes()
 
     if len(raw_payload) < 28 or raw_payload[:4] != MAGIC_HEADER:
-        raise ValueError("Файл не содержит шифра ЖИРАФ (или был поврежден сжатием Telegram).")
+        raise ValueError("Файл не содержит корректного шифра ЖИРАФ.")
 
     magic, shift, orig_len, d_val, n_val = struct.unpack('>4sIIQQ', raw_payload[:28])
     encrypted_data = raw_payload[28:28 + orig_len]
 
-    # Восстанавливаем гамму
     rng = random.Random(d_val ^ n_val ^ shift)
 
     decrypted_data = bytearray()
@@ -316,27 +301,30 @@ bot = Bot(token=BOT_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
+# Сохранение форматирования и последних ключей шифрования
 user_format_info = {}
+user_last_keys = {}
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
     welcome_text = (
         "🔐 *Бот шифрования Ж.И.Р.А.Ф.*\n\n"
-        "Я умею шифровать и расшифровывать текст и изображения алгоритмом Цезарь + RSA.\n\n"
-        "✨ *Особенности шифрования изображений:*\n"
-        "• Картинка шифруется в одну картинку-шифр без потери качества!\n"
-        "• Для расшифровки достаточно просто переслать полученный файл боту.\n\n"
+        "Я умею шифровать и расшифровывать текст и изображения оригинальным алгоритмом Цезарь + RSA.\n\n"
         "Выберите действие на клавиатуре:"
     )
     await message.answer(welcome_text, parse_mode="Markdown", reply_markup=main_keyboard)
 
 
-# --- ТЕКСТ ---
+# --- ТЕКСТ: ШИФРОВАНИЕ ---
 
 @dp.message(F.text == "🔐 Зашифровать")
 async def encrypt_start(message: types.Message, state: FSMContext):
-    await message.answer("📝 Введите текст для шифрования:", reply_markup=types.ReplyKeyboardRemove())
+    await message.answer(
+        "📝 Введите текст для шифрования:\n"
+        "*(можно использовать заглавные и строчные буквы, пробелы и знаки препинания)*",
+        reply_markup=types.ReplyKeyboardRemove()
+    )
     await state.set_state(CryptStates.waiting_for_encrypt)
 
 @dp.message(CryptStates.waiting_for_encrypt)
@@ -353,11 +341,15 @@ async def encrypt_process(message: types.Message, state: FSMContext):
         packet, char_info = encrypt_text(text)
         user_id = message.from_user.id
         user_format_info[user_id] = char_info
+        # Запоминаем сгенерированные d и n для удобства
+        user_last_keys[user_id] = (packet[1], packet[2])
+
+        packet_str = f"['{packet[0]}', {packet[1]}, {packet[2]}]"
 
         response = (
             f"✅ *Зашифровано успешно!*\n\n"
-            f"```\n{packet}\n```\n\n"
-            f"📋 *Скопируйте этот пакет для расшифровки.*"
+            f"```\n{packet_str}\n```\n\n"
+            f"📋 *Нажмите на блок выше, чтобы скопировать весь пакет для расшифровки.*"
         )
         await message.answer(response, parse_mode="Markdown", reply_markup=main_keyboard)
     except Exception as e:
@@ -365,26 +357,67 @@ async def encrypt_process(message: types.Message, state: FSMContext):
 
     await state.clear()
 
+
+# --- ТЕКСТ: РАСШИФРОВКА ---
+
 @dp.message(F.text == "🔓 Расшифровать")
 async def decrypt_start(message: types.Message, state: FSMContext):
-    await message.answer("📋 Вставьте пакет для расшифровки:", reply_markup=types.ReplyKeyboardRemove())
+    await message.answer(
+        "📋 Вставьте пакет для расшифровки:\n"
+        "*(в формате `['строка_цифр', d, n]` либо просто скопированную строку цифр)*",
+        reply_markup=types.ReplyKeyboardRemove()
+    )
     await state.set_state(CryptStates.waiting_for_decrypt)
 
 @dp.message(CryptStates.waiting_for_decrypt)
 async def decrypt_process(message: types.Message, state: FSMContext):
-    try:
-        packet = eval(message.text)
-        user_id = message.from_user.id
-        char_info = user_format_info.get(user_id)
+    raw_text = message.text.strip().replace("```", "").replace("`", "")
+    user_id = message.from_user.id
+    packet = None
 
+    try:
+        # Вариант 1: передан полный пакет ['...', d, n]
+        if raw_text.startswith("[") and raw_text.endswith("]"):
+            packet = eval(raw_text)
+        # Вариант 2: переданы только цифры шифра (как получилось у вас)
+        elif raw_text.isdigit() or (raw_text.startswith("'") and raw_text.endswith("'")):
+            clean_digits = "".join(ch for ch in raw_text if ch.isdigit())
+            if user_id in user_last_keys:
+                d_val, n_val = user_last_keys[user_id]
+                packet = [clean_digits, d_val, n_val]
+            else:
+                await message.answer(
+                    "❌ Вы отправили только строку цифр без ключей `d` и `n`.\n\n"
+                    "Отправьте полный пакет в формате:\n`['строка_цифр', d, n]`",
+                    parse_mode="Markdown",
+                    reply_markup=main_keyboard
+                )
+                await state.clear()
+                return
+        else:
+            # Попытка разобрать через eval на всякий случай
+            parsed = eval(raw_text)
+            if isinstance(parsed, (list, tuple)) and len(parsed) >= 3:
+                packet = parsed
+
+        if not packet or len(packet) < 3:
+            raise ValueError("Неверный формат пакета.")
+
+        char_info = user_format_info.get(user_id)
         decrypted = decrypt_packet(packet, char_info)
 
         if user_id in user_format_info:
             del user_format_info[user_id]
 
         await message.answer(f"✅ *Расшифровано:*\n\n`{decrypted}`", parse_mode="Markdown", reply_markup=main_keyboard)
+
     except Exception as e:
-        await message.answer(f"❌ Ошибка при расшифровке: {e}", reply_markup=main_keyboard)
+        await message.answer(
+            f"❌ Ошибка при расшифровке: {e}\n\n"
+            "Убедитесь, что отправляете пакет в формате:\n`['строка_цифр', d, n]`",
+            parse_mode="Markdown",
+            reply_markup=main_keyboard
+        )
 
     await state.clear()
 
@@ -413,13 +446,12 @@ async def img_encrypt_process(message: types.Message, state: FSMContext):
 
         await status_msg.delete()
 
-        # Отправляем в виде PNG файла без сжатия
         output_file = BufferedInputFile(cipher_png_bytes, filename="encrypted_image.png")
         caption_text = (
             "🔒 *Изображение зашифровано в картинку-шифр!*\n\n"
             "✨ *Как расшифровать обратно:*\n"
             "1. Нажмите «📥 Расшифровать изображение».\n"
-            "2. Перешлите этот файл боту (или отправьте как документ без сжатия).\n\n"
+            "2. Перешлите этот файл боту.\n\n"
             "Исходное фото восстановится в *100% оригинальном качестве*!"
         )
         await message.answer_document(
@@ -442,8 +474,7 @@ async def img_encrypt_process(message: types.Message, state: FSMContext):
 async def img_decrypt_start(message: types.Message, state: FSMContext):
     await message.answer(
         "📥 *Отправьте зашифрованную картинку-файл:*\n\n"
-        "💡 *Совет:* Просто **перешлите** сообщение с файлом `encrypted_image.png`, "
-        "которое вам прислал бот, либо отправьте его как **Файл** (без сжатия).",
+        "💡 *Совет:* Просто **перешлите** полученное сообщение с файлом `encrypted_image.png` боту.",
         parse_mode="Markdown",
         reply_markup=types.ReplyKeyboardRemove()
     )
@@ -474,9 +505,8 @@ async def img_decrypt_process(message: types.Message, state: FSMContext):
         await status_msg.delete()
         await message.answer(
             "❌ *Не удалось расшифровать изображение!*\n\n"
-            "Причина: пиксели были искажены сжатием Telegram при отправке как обычное фото.\n\n"
-            "📌 **Как исправить:** Отправьте зашифрованную картинку как **Файл / Документ** "
-            "(📎 Скрепка → Файл) либо просто **перешлите сообщение с файлом** от бота.",
+            "📌 Отправьте зашифрованную картинку как **Файл / Документ** (без сжатия) "
+            "или просто **перешлите** исходный файл от бота.",
             parse_mode="Markdown",
             reply_markup=main_keyboard
         )
@@ -492,8 +522,9 @@ async def help_command(message: types.Message):
     help_text = (
         "🔐 *Справка по боту Ж.И.Р.А.Ф.*\n\n"
         "• *Шифрование текста*: Введите русский текст, получите цифровой пакет.\n"
-        "• *Шифрование картинок*: Отправьте фото — бот вернёт файл-картинку с шумом.\n"
-        "• *Расшифровка картинок*: Нажмите «📥 Расшифровать изображение» и перешлите боту полученный файл. Фото восстановится в идеальном качестве."
+        "• *Расшифровка текста*: Отправьте пакет целиком либо только строку с цифрами.\n"
+        "• *Шифрование картинок*: Отправьте фото — бот вернёт зашифрованный PNG-файл с шумом.\n"
+        "• *Расшифровка картинок*: Нажмите «📥 Расшифровать изображение» и перешлите боту файл. Фото восстановится без потерь качества."
     )
     await message.answer(help_text, parse_mode="Markdown", reply_markup=main_keyboard)
 
