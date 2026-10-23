@@ -20,12 +20,11 @@ load_dotenv()
 load_dotenv("bot.env")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-# ==================== ТВОЙ РАБОЧИЙ АЛГОРИТМ ШИФРОВАНИЯ (БЕЗ ИЗМЕНЕНИЙ) ====================
+# ==================== ОРИГИНАЛЬНЫЙ АЛГОРИТМ ШИФРОВАНИЯ (БЕЗ ИЗМЕНЕНИЙ) ====================
 RUSSIAN_LOWERCASE = 'абвгдеёжзийклмнопрстуфхцчшщъыьэюя'
 alf = ['а', 'б', 'в', 'г', 'д', 'е', 'ё', 'ж', 'з', 'и', 'й', 'к', 'л', 'м', 'н', 'о', 'п', 'р', 'с', 'т', 'у', 'ф', 'х', 'ц', 'ч', 'ш', 'щ', 'ъ', 'ы', 'ь', 'э', 'ю', 'я']
 num = ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12', '13', '14', '15', '16', '17', '18', '19', '20', '21', '22', '23', '24', '25', '26', '27', '28', '29', '30', '31', '32', '33']
 
-# Словарь для перевода заглавных букв в строчные
 upper_to_lower = {
     'А': 'а', 'Б': 'б', 'В': 'в', 'Г': 'г', 'Д': 'д', 'Е': 'е', 'Ё': 'ё',
     'Ж': 'ж', 'З': 'з', 'И': 'и', 'Й': 'й', 'К': 'к', 'Л': 'л', 'М': 'м',
@@ -33,7 +32,6 @@ upper_to_lower = {
     'Ф': 'ф', 'Х': 'х', 'Ц': 'ц', 'Ч': 'ч', 'Ш': 'ш', 'Щ': 'щ', 'Ъ': 'ъ',
     'Ы': 'ы', 'Ь': 'ь', 'Э': 'э', 'Ю': 'ю', 'Я': 'я'
 }
-# Обратный словарь для восстановления заглавных букв
 lower_to_upper = {v: k for k, v in upper_to_lower.items()}
 
 @lru_cache(None)
@@ -207,13 +205,12 @@ def decrypt_packet(packet, char_info=None):
     else:
         return decrypted_lower
 
-
-# ==================== АЛГОРИТМ ДЛЯ ИЗОБРАЖЕНИЙ НА ВАШЕМ ШИФРЕ ====================
+# ==================== ОБРАБОТКА ИЗОБРАЖЕНИЙ ====================
 
 BASE32_ALF = alf[:32]
+CHUNK_SIZE = 3800  # Безопасный размер для сообщения в Telegram
 
 def bytes_to_russian(data: bytes) -> str:
-    """Конвертирует байты изображения в строку из букв алфавита alf."""
     bit_str = ''.join(f"{b:08b}" for b in data)
     padding = (5 - len(bit_str) % 5) % 5
     bit_str += '0' * padding
@@ -224,7 +221,6 @@ def bytes_to_russian(data: bytes) -> str:
     return ''.join(chars)
 
 def russian_to_bytes(text: str) -> bytes:
-    """Восстанавливает оригинальные байты изображения из букв alf."""
     padding = BASE32_ALF.index(text[0])
     bit_str = ''
     for ch in text[1:]:
@@ -237,29 +233,16 @@ def russian_to_bytes(text: str) -> bytes:
         out.append(int(bit_str[i:i+8], 2))
     return bytes(out)
 
-def compress_image_to_fit(raw_bytes: bytes, max_packet_len: int = 3800) -> bytes:
-    """
-    Сжимает изображение так, чтобы итоговый RSA-пакет из цифр
-    гарантированно уместился ровно в 1 сообщение Telegram (< 4096 символов).
-    """
+def prepare_quality_image(raw_bytes: bytes) -> bytes:
+    """Масштабирует фото с сохранением чёткости (300x300, JPEG 75%)."""
     img = Image.open(io.BytesIO(raw_bytes))
     if img.mode != "RGB":
         img = img.convert("RGB")
 
-    for side in [48, 40, 36, 32, 28, 24, 20, 16]:
-        for q in [40, 30, 20, 15, 10, 5, 1]:
-            im = img.copy()
-            im.thumbnail((side, side), Image.Resampling.LANCZOS)
-            buf = io.BytesIO()
-            im.save(buf, format="JPEG", quality=q, optimize=True)
-            data = buf.getvalue()
-
-            num_letters = 1 + (len(data) * 8 + 4) // 5
-            estimated_len = num_letters * 6 + 50
-            if estimated_len <= max_packet_len:
-                return data
-
-    return data
+    img.thumbnail((300, 300), Image.Resampling.LANCZOS)
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=75, optimize=True)
+    return buf.getvalue()
 
 
 # ==================== TELEGRAM БОТ ====================
@@ -285,22 +268,22 @@ dp = Dispatcher(storage=storage)
 
 user_format_info = {}
 
-
 @dp.message(Command("start"))
-async def cmd_start(message: types.Message):
+async def cmd_start(message: types.Message, state: FSMContext):
+    await state.clear()
     welcome_text = (
         "🔐 *Бот шифрования Ж.И.Р.А.Ф.*\n\n"
-        "Я умею шифровать и расшифровывать текст и изображения вашим комбинированным алгоритмом (Цезарь + RSA).\n\n"
+        "Я умею шифровать и расшифровывать текст и изображения вашим алгоритмом (Цезарь + RSA).\n\n"
         "✨ *Возможности:*\n"
         "• Шифрование и расшифровка текста\n"
-        "• Сжатие и шифрование изображений в цифровой пакет (ровно в 1 сообщение)\n"
-        "• Восстановление фотографии из цифрового пакета\n\n"
+        "• Шифрование изображений в хорошем качестве с делением на части\n"
+        "• Восстановление фотографий из сообщений\n\n"
         "Выберите действие на клавиатуре:"
     )
     await message.answer(welcome_text, parse_mode="Markdown", reply_markup=main_keyboard)
 
 
-# --- ТЕКСТ: ШИФРОВАНИЕ И РАСШИФРОВКА ---
+# --- ТЕКСТ ---
 
 @dp.message(F.text == "🔐 Зашифровать")
 async def encrypt_start(message: types.Message, state: FSMContext):
@@ -310,7 +293,6 @@ async def encrypt_start(message: types.Message, state: FSMContext):
         reply_markup=types.ReplyKeyboardRemove()
     )
     await state.set_state(CryptStates.waiting_for_encrypt)
-
 
 @dp.message(CryptStates.waiting_for_encrypt)
 async def encrypt_process(message: types.Message, state: FSMContext):
@@ -338,7 +320,6 @@ async def encrypt_process(message: types.Message, state: FSMContext):
 
     await state.clear()
 
-
 @dp.message(F.text == "🔓 Расшифровать")
 async def decrypt_start(message: types.Message, state: FSMContext):
     await message.answer(
@@ -347,7 +328,6 @@ async def decrypt_start(message: types.Message, state: FSMContext):
         reply_markup=types.ReplyKeyboardRemove()
     )
     await state.set_state(CryptStates.waiting_for_decrypt)
-
 
 @dp.message(CryptStates.waiting_for_decrypt)
 async def decrypt_process(message: types.Message, state: FSMContext):
@@ -388,10 +368,9 @@ async def img_encrypt_start(message: types.Message, state: FSMContext):
     )
     await state.set_state(CryptStates.waiting_for_image_encrypt)
 
-
 @dp.message(CryptStates.waiting_for_image_encrypt, F.photo | F.document)
 async def img_encrypt_process(message: types.Message, state: FSMContext):
-    status_msg = await message.answer("⏳ Сжимаю и шифрую изображение вашим алгоритмом...")
+    status_msg = await message.answer("⏳ Обработка и шифрование изображения вашим алгоритмом...")
 
     try:
         if message.photo:
@@ -404,23 +383,54 @@ async def img_encrypt_process(message: types.Message, state: FSMContext):
         raw_bytes = downloaded.read()
 
         def do_work():
-            # 1. Сжатие изображения под лимит одного сообщения
-            compressed = compress_image_to_fit(raw_bytes)
-            # 2. Перевод байтов в буквы русского алфавита alf
+            compressed = prepare_quality_image(raw_bytes)
             rus_text = bytes_to_russian(compressed)
-            # 3. Шифрование вашим оригинальным алгоритмом (shif_c + sh_RSA)
             return shifr(rus_text)
 
-        # Выполняем в отдельном потоке, чтобы бот не зависал
         packet = await asyncio.to_thread(do_work)
+        cipher_digits = packet[0]
+        d_val = packet[1]
+        n_val = packet[2]
 
         await status_msg.delete()
-        response = (
-            f"✅ *Изображение зашифровано!*\n\n"
-            f"```\n{packet}\n```\n\n"
-            f"📋 *Нажмите на пакет, чтобы скопировать. Он готов для расшифровки одним сообщением!*"
-        )
-        await message.answer(response, parse_mode="Markdown", reply_markup=main_keyboard)
+
+        chunks = [cipher_digits[i:i + CHUNK_SIZE] for i in range(0, len(cipher_digits), CHUNK_SIZE)]
+        total_parts = len(chunks)
+
+        if total_parts == 1:
+            await message.answer(
+                f"✅ *Изображение зашифровано!*\n\n"
+                f"```\n{packet}\n```\n\n"
+                f"📋 *Нажмите на блок с кодом, чтобы скопировать его.*",
+                parse_mode="Markdown",
+                reply_markup=main_keyboard
+            )
+        else:
+            await message.answer(
+                f"✅ *Изображение зашифровано в высоком качестве!*\n\n"
+                f"Шифр разбит на *{total_parts} сообщений* для сохранения детализации.\n"
+                f"Ключи:\n"
+                f"• `d` = `{d_val}`\n"
+                f"• `n` = `{n_val}`\n\n"
+                f"Ниже отправлены части шифра 👇",
+                parse_mode="Markdown"
+            )
+
+            for idx, chunk in enumerate(chunks, 1):
+                await message.answer(
+                    f"📦 *Часть {idx} из {total_parts}:*\n\n"
+                    f"`{chunk}`",
+                    parse_mode="Markdown"
+                )
+
+            await message.answer(
+                f"💡 *Инструкция для получателя:*\n"
+                f"1. Нажмите кнопку «📥 Расшифровать изображение».\n"
+                f"2. Перешлите или отправьте все {total_parts} сообщений с цифрами.\n"
+                f"3. Затем отправьте сообщение с ключами: `{d_val} {n_val}` (два числа через пробел).",
+                parse_mode="Markdown",
+                reply_markup=main_keyboard
+            )
 
     except Exception as e:
         await status_msg.delete()
@@ -433,63 +443,100 @@ async def img_encrypt_process(message: types.Message, state: FSMContext):
 
 @dp.message(F.text == "📥 Расшифровать изображение")
 async def img_decrypt_start(message: types.Message, state: FSMContext):
-    await message.answer(
-        "📋 Вставьте цифровой пакет зашифрованного изображения:\n"
-        "*(в формате ['зашифрованная_строка_из_цифр', d, n])*",
-        reply_markup=types.ReplyKeyboardRemove()
-    )
     await state.set_state(CryptStates.waiting_for_image_decrypt)
+    await state.update_data(accumulated_cipher="")
+
+    guide_text = (
+        "📋 *Инструкция по расшифровке изображения:*\n\n"
+        "🔹 *Если шифр разбит на несколько сообщений:*\n"
+        "1. Отправьте сюда все сообщения с цифрами шифра по очереди.\n"
+        "2. В конце отправьте ключи через пробел: `d n` (например: `250433 427099`) или команду `/done d n`.\n\n"
+        "🔹 *Если шифр цельным пакетом:*\n"
+        "Отправьте пакет целиком: `['строка_цифр', d, n]`.\n\n"
+        "Жду данные для расшифровки..."
+    )
+    await message.answer(guide_text, parse_mode="Markdown", reply_markup=types.ReplyKeyboardRemove())
 
 
 @dp.message(CryptStates.waiting_for_image_decrypt, F.text)
 async def img_decrypt_process(message: types.Message, state: FSMContext):
-    status_msg = await message.answer("⏳ Расшифровываю пакет и восстанавливаю изображение...")
+    raw_text = message.text.strip()
+    data = await state.get_data()
+    acc_cipher = data.get("accumulated_cipher", "")
 
+    # Проверка на цельный пакет: ['...', d, n]
+    if raw_text.startswith("[") and raw_text.endswith("]"):
+        try:
+            packet = eval(raw_text)
+            if isinstance(packet, (list, tuple)) and len(packet) == 3:
+                await _perform_decrypt_and_send(message, str(packet[0]), int(packet[1]), int(packet[2]), state)
+                return
+        except Exception:
+            pass
+
+    # Проверка на строку ключей "d n" или "/done d n"
+    parts = raw_text.replace("/done", "").strip().split()
+    if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+        d_val = int(parts[0])
+        n_val = int(parts[1])
+        if not acc_cipher:
+            await message.answer("⚠️ Ключи получены, но цифры шифра ещё не были отправлены. Сначала отправьте сообщения с цифрами:")
+            return
+        await _perform_decrypt_and_send(message, acc_cipher, d_val, n_val, state)
+        return
+
+    # Накопление цифр
+    clean_digits = "".join(ch for ch in raw_text if ch.isdigit())
+    if clean_digits:
+        acc_cipher += clean_digits
+        await state.update_data(accumulated_cipher=acc_cipher)
+        await message.answer(
+            f"📥 Принята часть шифра (накоплено цифр: {len(acc_cipher)}).\n\n"
+            f"Отправьте следующую часть ИЛИ пришлите ключи через пробел: `d n`, чтобы начать восстановление фото.",
+            parse_mode="Markdown"
+        )
+    else:
+        await message.answer(
+            "⚠️ Сообщение не распознано. Отправьте цифры шифра или пару ключей `d n` через пробел.",
+            parse_mode="Markdown"
+        )
+
+
+async def _perform_decrypt_and_send(message: types.Message, cipher_str: str, d_val: int, n_val: int, state: FSMContext):
+    status_msg = await message.answer("⏳ Расшифровываю изображение алгоритмом RSA...")
     try:
-        packet = eval(message.text.strip())
-
         def do_restore():
-            # 1. Дешифрование вашим RSA + де-Цезарем (de_shifr)
+            packet = [cipher_str, d_val, n_val]
             rus_text = de_shifr(packet)
-            # 2. Обратный перевод русских букв в байты картинки
             return russian_to_bytes(rus_text)
 
         img_bytes = await asyncio.to_thread(do_restore)
+        photo_file = BufferedInputFile(img_bytes, filename="decrypted_hd.jpg")
 
-        photo_file = BufferedInputFile(img_bytes, filename="decrypted.jpg")
         await status_msg.delete()
         await message.answer_photo(
             photo=photo_file,
-            caption="🔓 Изображение успешно расшифровано вашим алгоритмом!",
+            caption="🔓 Изображение успешно расшифровано в хорошем качестве!",
             reply_markup=main_keyboard
         )
-
-    except SyntaxError:
-        await status_msg.delete()
-        await message.answer(
-            "❌ *Неверный формат пакета!*\n\nОжидается пакет вида:\n`['строка_цифр', число, число]`",
-            parse_mode="Markdown",
-            reply_markup=main_keyboard
-        )
+        await state.clear()
     except Exception as e:
         await status_msg.delete()
-        await message.answer(f"❌ Ошибка при расшифровке изображения: {e}", reply_markup=main_keyboard)
-
-    await state.clear()
+        await message.answer(
+            f"❌ Ошибка расшифровки: {e}\n\n"
+            "Убедитесь, что все части шифра и значения d и n переданы верно.",
+            reply_markup=main_keyboard
+        )
+        await state.clear()
 
 
 @dp.message(F.text == "❓ Помощь")
 async def help_command(message: types.Message):
     help_text = (
-        "🔐 *Как пользоваться ботом*\n\n"
-        "*Шифрование текста:*\n"
-        "1. Нажмите «🔐 Зашифровать» и введите русский текст.\n"
-        "2. Получите цифровой пакет вида `['строка_цифр', d, n]`.\n\n"
-        "*Шифрование изображений:*\n"
-        "1. Нажмите «🖼️ Зашифровать изображение» и отправьте фото.\n"
-        "2. Бот автоматически сожмет изображение и зашифрует его вашим алгоритмом Цезарь + RSA.\n"
-        "3. Вы получите цифровой пакет в точно таком же формате, умещающийся ровно в одно сообщение Telegram.\n\n"
-        "*Расшифровка:* Нажмите соответствующую кнопку («🔓 Расшифровать» или «📥 Расшифровать изображение») и отправьте пакет."
+        "🔐 *Справка по боту Ж.И.Р.А.Ф.*\n\n"
+        "• *Шифрование текста*: Нажмите «🔐 Зашифровать», введите русский текст, получите цифровой пакет.\n"
+        "• *Шифрование картинок*: Нажмите «🖼️ Зашифровать изображение» и отправьте фото. Бот сохраняет чёткость и разбивает RSA-шифр на сообщения.\n"
+        "• *Расшифровка картинок*: Нажмите «📥 Расшифровать изображение», отправьте сообщения с цифрами по очереди, затем введите ключи `d n` через пробел."
     )
     await message.answer(help_text, parse_mode="Markdown", reply_markup=main_keyboard)
 
